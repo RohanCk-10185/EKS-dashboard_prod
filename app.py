@@ -7,9 +7,7 @@ import json
 import threading
 import time
 from database import get_db, delete_old_request_logs
-
 from contextlib import asynccontextmanager
-
 from fastapi import FastAPI, Request, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,17 +19,12 @@ from starlette.responses import Response
 from sqlalchemy.orm import Session
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-
-# Kubernetes imports
 from kubernetes import client, watch, stream
 from kubernetes.client.rest import ApiException
+from pathlib import Path
+import sys
 
 # Local Imports
-load_dotenv()
-print("Current directory:", os.getcwd())
-print("AWS_REGIONS =", os.getenv("AWS_REGIONS"))
-print("AWS_TARGET_ACCOUNTS_ROLES =", os.getenv("AWS_TARGET_ACCOUNTS_ROLES"))
-
 import database
 from data_updater import update_all_data, update_single_cluster_data
 from aws_data_fetcher import (
@@ -42,7 +35,26 @@ from aws_data_fetcher import (
     EKS_EOL_DATES,
 )
 
+# ---------------------------------------
+# Helper: Get absolute path for bundled files (PyInstaller)
+# ---------------------------------------
+def resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return str(Path(sys._MEIPASS) / relative_path)
+    return str(Path(__file__).parent / relative_path)
+
+# ---------------------------------------
+# Environment Setup
+# ---------------------------------------
+load_dotenv(dotenv_path=resource_path(".env") if Path(resource_path(".env")).exists() else None)
+
+print("Current directory:", os.getcwd())
+print("AWS_REGIONS =", os.getenv("AWS_REGIONS"))
+print("AWS_TARGET_ACCOUNTS_ROLES =", os.getenv("AWS_TARGET_ACCOUNTS_ROLES"))
+
+# ---------------------------------------
 # Scheduler & Concurrency Lock
+# ---------------------------------------
 scheduler = AsyncIOScheduler()
 update_lock = asyncio.Lock()
 
@@ -53,7 +65,6 @@ async def trigger_update():
     async with update_lock:
         await update_all_data()
 
-# Lifespan manager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.info("Application starting up...")
@@ -74,17 +85,19 @@ def start_cleanup_thread():
                     print("[CLEANUP] Old request logs deleted successfully.")
             except Exception as e:
                 print(f"[CLEANUP ERROR] {e}")
-            time.sleep(86400)  # Sleep for 24 hours (86400 seconds)
-    
-    # Run the thread as a daemon so it doesn't block app shutdown
-    thread = threading.Thread(target=cleaner, daemon=True)
-    thread.start()
+            time.sleep(86400)
+    threading.Thread(target=cleaner, daemon=True).start()
 
+# ---------------------------------------
+# FastAPI App
+# ---------------------------------------
 app = FastAPI(title="EKS Operational Dashboard", lifespan=lifespan)
-start_cleanup_thread()  
+start_cleanup_thread()
 database.create_db_and_tables()
 
+# ---------------------------------------
 # Middleware
+# ---------------------------------------
 @app.middleware("http")
 async def log_and_db_session_middleware(request: Request, call_next):
     request.state.db = database.SessionLocal()
@@ -115,23 +128,27 @@ async def log_and_db_session_middleware(request: Request, call_next):
 
 class UserStateMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # REMOVED: Default test user
         request.state.user = request.session.get("user") 
         response = await call_next(request)
         return response
 
 app.add_middleware(UserStateMiddleware)
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SECRET_KEY", "a_very_secret_key_for_dev"))
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
 
+# ---------------------------------------
+# Mount Static & Templates (PyInstaller-safe)
+# ---------------------------------------
+app.mount("/static", StaticFiles(directory=resource_path("static")), name="static")
+templates = Jinja2Templates(directory=resource_path("templates"))
+
+# ---------------------------------------
 # Routes
+# ---------------------------------------
 @app.get("/", response_class=HTMLResponse)
 async def read_dashboard(request: Request, db: Session = Depends(database.get_db)):
     all_clusters = database.get_all_clusters_summary(db)
     now = datetime.now(timezone.utc)
     ninety_days_from_now = now + timedelta(days=90)
-    
     quick_info = {
         "total_clusters": len(all_clusters),
         "clusters_with_health_issues": sum(1 for c in all_clusters if c["health_status_summary"] == "HAS_ISSUES"),
@@ -153,7 +170,6 @@ async def read_cluster_detail(request: Request, account_id: str, region: str, cl
     cluster_details = database.get_cluster_details(db, account_id, region, cluster_name)
     if not cluster_details:
         return templates.TemplateResponse("error.html", {"request": request, "errors": [f"Cluster {cluster_name} not found in database."]}, status_code=404)
-    
     context = {"request": request, "cluster": cluster_details, "account_id": account_id, "region": region}
     return templates.TemplateResponse("cluster_detail.html", context)
 
@@ -166,15 +182,12 @@ async def refresh_data(request: Request):
 
 @app.post("/api/refresh-cluster/{account_id}/{region}/{cluster_name}")
 async def refresh_cluster(account_id: str, region: str, cluster_name: str):
-    # This endpoint now works correctly by calling the single-cluster update function
     db_session = database.SessionLocal()
     try:
         asyncio.create_task(update_single_cluster_data(db_session, account_id, region, cluster_name))
         return JSONResponse(content={"status": "success", "message": f"Refresh triggered for cluster {cluster_name}."})
     finally:
-        # The task will run in the background, but we need to close the session we created here.
-        # The task itself will manage its own session.
-        pass # The task will close its own session
+        pass
 
 @app.post("/api/upgrade-nodegroup")
 async def upgrade_nodegroup_api(request: Request):
@@ -192,20 +205,18 @@ async def get_metrics_api(account_id: str, region: str, cluster_name: str):
 
 @app.get("/api/workloads/{account_id}/{region}/{cluster_name}", response_class=JSONResponse)
 def get_workloads_api(account_id: str, region: str, cluster_name: str, db: Session = Depends(database.get_db)):
-    """
-    API endpoint to asynchronously fetch the large workloads JSON object.
-    """
     workloads_data = db.query(database.Cluster.workloads).filter(
         database.Cluster.account_id == account_id,
         database.Cluster.region == region,
         database.Cluster.name == cluster_name
     ).scalar()
-
     if workloads_data:
         return JSONResponse(content=workloads_data)
     return JSONResponse(content={"error": "Workloads not found for this cluster."}, status_code=404)
 
-# WebSockets
+# ---------------------------------------
+# WebSocket Routes
+# ---------------------------------------
 @app.websocket("/ws/logs/{account_id}/{region}/{cluster_name}/{namespace}/{pod_name}")
 async def stream_logs(websocket: WebSocket, account_id: str, region: str, cluster_name: str, namespace: str, pod_name: str):
     await websocket.accept()
@@ -251,8 +262,9 @@ async def stream_events(websocket: WebSocket, account_id: str, region: str, clus
         db_session.close()
         await websocket.close()
 
-
-
+# ---------------------------------------
+# App Entry
+# ---------------------------------------
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True, ws="wsproto")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
