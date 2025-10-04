@@ -213,6 +213,14 @@ async def stream_logs(websocket: WebSocket, account_id: str, region: str, cluste
     try:
         cluster = database.get_cluster_details(db_session, account_id, region, cluster_name)
         if not cluster: raise ValueError("Cluster not found in DB")
+        
+        # Check if cluster has private endpoint access
+        networking = cluster.get("networking", {})
+        endpoint_public_access = networking.get("endpointPublicAccess", True)
+        if not endpoint_public_access:
+            await websocket.send_text("ERROR: Cluster has private endpoint access only. Log streaming requires VPC access or public endpoint.")
+            return
+            
         api = get_k8s_api_client(cluster_name, cluster["endpoint"], cluster["certificateAuthority"]["data"], region, get_role_arn_for_account(account_id))
         core = client.CoreV1Api(api)
         streamer = stream.stream(core.read_namespaced_pod_log, name=pod_name, namespace=namespace, follow=True, _preload_content=False)
@@ -235,6 +243,14 @@ async def stream_events(websocket: WebSocket, account_id: str, region: str, clus
     try:
         cluster = database.get_cluster_details(db_session, account_id, region, cluster_name)
         if not cluster: raise ValueError("Cluster not found in DB")
+        
+        # Check if cluster has private endpoint access
+        networking = cluster.get("networking", {})
+        endpoint_public_access = networking.get("endpointPublicAccess", True)
+        if not endpoint_public_access:
+            await websocket.send_text(json.dumps({"type": "ERROR", "message": "Cluster has private endpoint access only. Event streaming requires VPC access or public endpoint."}))
+            return
+            
         api = get_k8s_api_client(cluster_name, cluster["endpoint"], cluster["certificateAuthority"]["data"], region, get_role_arn_for_account(account_id))
         core = client.CoreV1Api(api)
         w = watch.Watch()

@@ -1,4 +1,4 @@
-<!-- Overview Tab -->
+<!-- Overview Tab - Updated endpoint access display -->
 <div id="overview" class="tab-content active">
     <style>
         @keyframes fadeIn {
@@ -59,17 +59,18 @@
             {% if cluster.networking %}
             <div class="summary-grid">
                 <div><strong>VPC ID:</strong> <span class="code">{{ cluster.networking.vpcId or 'N/A' }}</span></div>
-                <div><strong>Endpoint Public Access:</strong> 
-                    {% set public_color = 'active' if cluster.networking.endpointPublicAccess else 'failed' %}
-                    <span class="status-badge status-{{ public_color }}">
-                        {{ 'Enabled' if cluster.networking.endpointPublicAccess else 'Disabled' }}
-                    </span>
-                </div>
-                <div><strong>Endpoint Private Access:</strong> 
-                    {% set private_color = 'active' if cluster.networking.endpointPrivateAccess else 'failed' %}
-                    <span class="status-badge status-{{ private_color }}">
-                        {{ 'Enabled' if cluster.networking.endpointPrivateAccess else 'Disabled' }}
-                    </span>
+                <div><strong>Endpoint Access:</strong> 
+                    {% set public_enabled = cluster.networking.endpointPublicAccess %}
+                    {% set private_enabled = cluster.networking.endpointPrivateAccess %}
+                    {% if public_enabled and private_enabled %}
+                        <span class="status-badge status-active">Public and Private</span>
+                    {% elif public_enabled %}
+                        <span class="status-badge status-active">Public</span>
+                    {% elif private_enabled %}
+                        <span class="status-badge status-active">Private</span>
+                    {% else %}
+                        <span class="status-badge status-failed">None</span>
+                    {% endif %}
                 </div>
                 <div><strong>Cluster security group:</strong> 
                     <span class="code">{{ cluster.networking.clusterSecurityGroupId or 'N/A' }}</span>

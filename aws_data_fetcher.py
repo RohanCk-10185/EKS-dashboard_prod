@@ -431,7 +431,7 @@ def get_cluster_metrics(account_id, region, cluster_name, role_arn=None):
 
     queries = [{
         'Id': f'm{i}', 'Label': key,
-        'MetricStat': { 'Metric': {'Namespace': 'ContainerInsights', 'MetricName': name, 'Dimensions': [{'Name': 'ClusterName', 'Value': cluster_name}]}, 'Period': 300, 'Stat': stat},
+        'MetricStat': { 'Metric': {'Namespace': 'ContainerInsights', 'MetricName': name, 'Dimensions': [{'Name': 'ClusterName', 'Value': cluster_name}]}, 'Period': 60, 'Stat': stat},
         'ReturnData': True
     } for i, (key, (name, stat)) in enumerate(metric_definitions.items())]
 
@@ -453,16 +453,77 @@ def get_cluster_metrics(account_id, region, cluster_name, role_arn=None):
 # --- Security Insights ---
 def get_security_insights(cluster_raw, eks_client):
     insights = {}
-    insights['secrets_encrypted'] = {"status": any(cfg.get('provider', {}).get('keyArn') for cfg in cluster_raw.get('encryptionConfig', [])), "description": "Checks if envelope encryption for Kubernetes secrets is enabled with a KMS key."}
-    insights['public_endpoint'] = {"status": not cluster_raw.get('resourcesVpcConfig', {}).get('endpointPublicAccess', False), "description": "Checks if the cluster's API server endpoint is private (best practice)."}
-    all_logs, enabled_logs = ['api', 'audit', 'authenticator', 'controllerManager', 'scheduler'], cluster_raw.get('logging', {}).get('clusterLogging', [{}])[0].get('types', [])
-    insights['logging_enabled'] = {"status": all(lt in enabled_logs for lt in all_logs), "enabled_logs": enabled_logs, "all_logs": all_logs, "missing_logs": [lt for lt in all_logs if lt not in enabled_logs], "description": "Checks if all control plane log types are enabled."}
-    insights['latest_platform_version'] = {"status": False, "current": "N/A", "latest": "N/A", "description": "Checks if the cluster is running the latest EKS platform version."}
-    try: eks_client.describe_update(name=cluster_raw['name'], updateId='dummy-id-for-platform-version')
-    except ClientError as e:
-        if "Latest platform version for" in (msg := e.response['Error'].get('Message', '')):
-            latest_pv, current_pv = msg.split(" is ")[-1].strip(), cluster_raw.get('platformVersion')
-            insights['latest_platform_version'].update({"status": latest_pv == current_pv, "current": current_pv, "latest": latest_pv})
+
+    # Endpoint access configuration: show combined status
+    vpc_cfg = cluster_raw.get('resourcesVpcConfig', {}) or {}
+    endpoint_public = bool(vpc_cfg.get('endpointPublicAccess', False))
+    endpoint_private = bool(vpc_cfg.get('endpointPrivateAccess', False))
+    
+    if endpoint_public and endpoint_private:
+        access_type = "Public and Private"
+    elif endpoint_public:
+        access_type = "Public"
+    elif endpoint_private:
+        access_type = "Private"
+    else:
+        access_type = "None"
+    
+    insights['endpoint_access'] = {
+        "status": access_type,
+        "public_enabled": endpoint_public,
+        "private_enabled": endpoint_private,
+        "description": "Shows the cluster's API server endpoint access configuration."
+    }
+    # Control plane logging status sourced exactly from DescribeCluster.logging.clusterLogging
+    all_logs = ['api', 'audit', 'authenticator', 'controllerManager', 'scheduler']
+    enabled_logs_set = set()
+    try:
+        for item in cluster_raw.get('logging', {}).get('clusterLogging', []) or []:
+            if isinstance(item, dict) and item.get('enabled'):
+                for t in item.get('types', []) or []:
+                    if isinstance(t, str):
+                        enabled_logs_set.add(t)
+    except Exception:
+        pass
+    enabled_logs = sorted(enabled_logs_set)
+    insights['logging_enabled'] = {
+        "status": all(lt in enabled_logs_set for lt in all_logs),
+        "enabled_logs": enabled_logs,
+        "all_logs": all_logs,
+        "missing_logs": [lt for lt in all_logs if lt not in enabled_logs_set],
+        "description": "Checks if all control plane log types are enabled."
+    }
+    # Get latest EKS version using describe-addon-versions for vpc-cni
+    def get_latest_eks_version(eks_client):
+        try:
+            # Use describe-addon-versions to get latest supported cluster version
+            response = eks_client.describe_addon_versions(addonName='vpc-cni')
+            versions = set()
+            for addon in response.get('addons', []):
+                for addon_version in addon.get('addonVersions', []):
+                    for compatibility in addon_version.get('compatibilities', []):
+                        cluster_version = compatibility.get('clusterVersion')
+                        if cluster_version:
+                            versions.add(cluster_version)
+            
+            if versions:
+                # Sort versions and get the latest
+                sorted_versions = sorted(versions, key=lambda x: tuple(map(int, x.split('.'))))
+                return sorted_versions[-1]
+            return None
+        except Exception as e:
+            logging.error(f"Error fetching latest EKS version: {e}")
+            return None
+    
+    current_version = cluster_raw.get('version', 'N/A')
+    latest_version = get_latest_eks_version(eks_client)
+    
+    insights['latest_platform_version'] = {
+        "status": current_version == latest_version if latest_version else False,
+        "current": current_version,
+        "latest": latest_version or "N/A",
+        "description": "Checks if the cluster is running the latest EKS platform version."
+    }
     return insights
 
 # --- Main Data Aggregation Functions ---
@@ -471,6 +532,26 @@ def _process_cluster_data(c_raw, with_details=False, detail_results=None):
     ninety_days_from_now = now + timedelta(days=90)
     version = c_raw.get("version", "Unknown")
     eol_date = EKS_EOL_DATES.get(version)
+
+    # Auto Mode per DescribeCluster: use computeConfig.enabled as source of truth
+    def _coerce_enabled(val):
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, (int, float)):
+            return bool(val)
+        if isinstance(val, str):
+            return val.strip().upper() in {"ENABLED", "ENABLING", "ON", "TRUE", "YES"}
+        return False
+
+    # Try multiple likely locations for Auto Mode in DescribeCluster
+    compute_cfg = c_raw.get('computeConfig') or {}
+    if isinstance(compute_cfg, dict) and 'enabled' in compute_cfg:
+        eks_auto_mode_value = 'Enabled' if _coerce_enabled(compute_cfg.get('enabled')) else 'Disabled'
+    elif isinstance(compute_cfg, dict) and compute_cfg.get('nodeRoleArn'):
+        # If EKS console shows Node IAM role under Auto Mode, treat as enabled
+        eks_auto_mode_value = 'Enabled'
+    else:
+        eks_auto_mode_value = 'Disabled'
 
     cluster_data = {
         "name": c_raw.get("name"), "arn": c_raw.get("arn"), "account_id": c_raw.get("arn", "::::").split(':')[4],
@@ -481,7 +562,7 @@ def _process_cluster_data(c_raw, with_details=False, detail_results=None):
         "health_status_summary": "HEALTHY" if not c_raw.get("health", {}).get("issues", []) else "HAS_ISSUES",
         "upgrade_insight_status": "PASSING" if version == "Unknown" or version >= "1.29" else "NEEDS_ATTENTION",
         "is_nearing_eol_90_days": bool(eol_date and now < eol_date <= ninety_days_from_now),
-        "eks_auto_mode": "Enabled" if c_raw.get('accessConfig', {}).get('authenticationMode') == 'API_AND_CONFIG_MAP' else "Disabled",
+        "eks_auto_mode": eks_auto_mode_value,
     }
 
     if with_details and detail_results:
@@ -583,6 +664,18 @@ def get_single_cluster_details(account_id, region, cluster_name, role_arn=None):
         if not cluster_raw: return {"errors": [f"Cluster {cluster_name} not found."]}
         cluster_raw['region'] = region
 
+        # Debug: log possible Auto Mode indicators for this cluster
+        try:
+            am_candidates = {
+                'autoMode': cluster_raw.get('autoMode'),
+                'eksAutoMode': cluster_raw.get('eksAutoMode'),
+                'compute.autoMode': (cluster_raw.get('compute') or {}).get('autoMode') if isinstance(cluster_raw.get('compute'), dict) else None,
+                'computeConfig.autoMode': (cluster_raw.get('computeConfig') or {}).get('autoMode') if isinstance(cluster_raw.get('computeConfig'), dict) else None,
+            }
+            logging.debug(f"[AutoMode Debug] {cluster_name} candidates: {am_candidates}")
+        except Exception:
+            pass
+
         detail_results = {"role_arn": role_arn}
         with ThreadPoolExecutor(max_workers=5) as executor:
             future_map = {}
@@ -591,8 +684,17 @@ def get_single_cluster_details(account_id, region, cluster_name, role_arn=None):
             future_map[executor.submit(fetch_fargate_profiles_for_cluster, eks_client, cluster_name)] = "fargate"
             future_map[executor.submit(get_security_insights, cluster_raw, eks_client)] = "security"
             
+            # Check if cluster has private endpoint access that might block Kubernetes API calls
+            vpc_config = cluster_raw.get("resourcesVpcConfig", {})
+            endpoint_public_access = vpc_config.get("endpointPublicAccess", True)
+            endpoint_private_access = vpc_config.get("endpointPrivateAccess", False)
+            
+            # Only attempt Kubernetes API calls if we have public access or are running from within the VPC
             if cluster_raw.get("endpoint") and cluster_raw.get("certificateAuthority", {}).get("data"):
-                future_map[executor.submit(get_kubernetes_workloads_and_map, cluster_name, cluster_raw["endpoint"], cluster_raw["certificateAuthority"]["data"], region, role_arn)] = "workloads"
+                if endpoint_public_access:
+                    future_map[executor.submit(get_kubernetes_workloads_and_map, cluster_name, cluster_raw["endpoint"], cluster_raw["certificateAuthority"]["data"], region, role_arn)] = "workloads"
+                else:
+                    detail_results["workloads"] = {"error": "Cluster has private endpoint access only. Kubernetes API calls require VPC access or public endpoint."}
             else:
                 detail_results["workloads"] = {"error": "Cluster endpoint or certificate authority data is not available."}
 

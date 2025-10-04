@@ -23,13 +23,19 @@
                         <tr>
                             <td>{{ insight.description }}</td>
                             <td style="text-align: center;">
-                                <span class="status-badge status-{{ 'active' if insight.status else 'failed' }}">
-                                    {{ 'Passing' if insight.status else 'Attention' }}
-                                </span>
+                                {% if key == 'endpoint_access' %}
+                                    <span class="status-badge status-active">{{ insight.status }}</span>
+                                {% else %}
+                                    <span class="status-badge status-{{ 'active' if insight.status else 'failed' }}">
+                                        {{ 'Passing' if insight.status else 'Attention' }}
+                                    </span>
+                                {% endif %}
                             </td>
                             <td class="text-secondary">
                                 {% if key == 'latest_platform_version' and not insight.status %}
                                     Current: {{ insight.current }}, Latest: {{ insight.latest }}
+                                {% elif key == 'endpoint_access' %}
+                                    Public: {{ 'Yes' if insight.public_enabled else 'No' }}, Private: {{ 'Yes' if insight.private_enabled else 'No' }}
                                 {% else %}
                                     -
                                 {% endif %}
