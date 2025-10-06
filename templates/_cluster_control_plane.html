@@ -1,0 +1,223 @@
+<!-- Control Plane Tab -->
+<div id="control-plane" class="tab-content">
+    <style>
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        #control-plane.fade-in {
+            animation: fadeIn 0.3s ease-in-out;
+        }
+        
+        .control-plane-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1.5rem;
+            margin-top: 1.5rem;
+        }
+        
+        .metric-card {
+            background-color: var(--surface-color);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .metric-card-header {
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border-color);
+            background-color: #F8F9FA;
+        }
+        
+        .metric-card-header h3 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin: 0;
+            color: var(--text-primary);
+        }
+        
+        .metric-card-content {
+            padding: 1rem;
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 200px;
+            flex-grow: 1;
+        }
+    </style>
+
+    <!-- Loading State -->
+    <div id="control-plane-loading-state" class="skeleton-wrapper" style="display: none;">
+        <div class="control-plane-grid">
+            {% for i in range(12) %}
+            <div class="metric-card">
+                <div class="metric-card-header">
+                    <div class="skeleton skeleton-text" style="width: 60%; height: 20px;"></div>
+                </div>
+                <div class="metric-card-content">
+                    <div class="skeleton" style="width: 100%; height: 180px;"></div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Error State -->
+    <div id="control-plane-error-state" style="display: none;" class="no-data-message">
+        <p class="error-message">Could not load control plane metrics data.</p>
+    </div>
+
+    <!-- Control Plane Metrics Container -->
+    <div class="control-plane-grid" style="display: none;">
+        <!-- Row 1 -->
+        <div class="metric-card">
+            <div class="metric-card-header">
+                <h3>Requests</h3>
+            </div>
+            <div class="metric-card-content">
+                <div class="chart-container">
+                    <canvas id="requests-chart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <div class="metric-card">
+            <div class="metric-card-header">
+                <h3>Requests HTTP 4XX</h3>
+            </div>
+            <div class="metric-card-content">
+                <div class="chart-container">
+                    <canvas id="requests-4xx-chart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <div class="metric-card">
+            <div class="metric-card-header">
+                <h3>Requests HTTP 5XX</h3>
+            </div>
+            <div class="metric-card-content">
+                <div class="chart-container">
+                    <canvas id="requests-5xx-chart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 2 -->
+        <div class="metric-card">
+            <div class="metric-card-header">
+                <h3>Requests HTTP 429</h3>
+            </div>
+            <div class="metric-card-content">
+                <div class="chart-container">
+                    <canvas id="requests-429-chart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <div class="metric-card">
+            <div class="metric-card-header">
+                <h3>Storage size</h3>
+            </div>
+            <div class="metric-card-content">
+                <div class="chart-container">
+                    <canvas id="storage-size-chart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <div class="metric-card">
+            <div class="metric-card-header">
+                <h3>Scheduler attempts</h3>
+            </div>
+            <div class="metric-card-content">
+                <div class="chart-container">
+                    <canvas id="scheduler-attempts-chart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 3 -->
+        <div class="metric-card">
+            <div class="metric-card-header">
+                <h3>Pending pods</h3>
+            </div>
+            <div class="metric-card-content">
+                <div class="chart-container">
+                    <canvas id="pending-pods-chart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <div class="metric-card">
+            <div class="metric-card-header">
+                <h3>API server request latency</h3>
+            </div>
+            <div class="metric-card-content">
+                <div class="chart-container">
+                    <canvas id="api-server-latency-chart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <div class="metric-card">
+            <div class="metric-card-header">
+                <h3>API server current inflight requests</h3>
+            </div>
+            <div class="metric-card-content">
+                <div class="chart-container">
+                    <canvas id="api-server-inflight-chart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 4 -->
+        <div class="metric-card">
+            <div class="metric-card-header">
+                <h3>Webhook requests</h3>
+            </div>
+            <div class="metric-card-content">
+                <div class="chart-container">
+                    <canvas id="webhook-requests-chart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <div class="metric-card">
+            <div class="metric-card-header">
+                <h3>Webhook request rejections</h3>
+            </div>
+            <div class="metric-card-content">
+                <div class="chart-container">
+                    <canvas id="webhook-rejections-chart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <div class="metric-card">
+            <div class="metric-card-header">
+                <h3>Webhook request latency P99</h3>
+            </div>
+            <div class="metric-card-content">
+                <div class="chart-container">
+                    <canvas id="webhook-latency-chart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    window.addEventListener('load', () => {
+        const tab = document.getElementById('control-plane');
+        if (tab) {
+            tab.classList.add('fade-in');
+        }
+    });
+</script>
