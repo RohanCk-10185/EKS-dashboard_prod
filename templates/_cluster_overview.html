@@ -73,9 +73,9 @@
                     {% set public_enabled = cluster.networking.endpointPublicAccess %}
                     {% set private_enabled = cluster.networking.endpointPrivateAccess %}
                     {% if public_enabled and private_enabled %}
-                        <span class="status-badge status-active">Public and Private</span>
+                        <span class="status-badge status-updating">Public and Private</span>
                     {% elif public_enabled %}
-                        <span class="status-badge status-active">Public</span>
+                        <span class="status-badge status-deleting">Public</span>
                     {% elif private_enabled %}
                         <span class="status-badge status-active">Private</span>
                     {% else %}
