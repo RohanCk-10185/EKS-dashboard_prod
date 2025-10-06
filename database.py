@@ -298,12 +298,11 @@ def _get_access_config_summary(access_config):
     if not access_config:
         return "Unknown"
     
-    bootstrap_admin = access_config.get('bootstrapClusterCreatorAdminPermissions', False)
     auth_mode = access_config.get('authenticationMode', 'Unknown')
     
-    if bootstrap_admin and auth_mode == 'API_AND_CONFIG_MAP':
-        return "Full Access"
-    elif bootstrap_admin and auth_mode == 'API':
+    if auth_mode == 'API_AND_CONFIG_MAP':
+        return "API AND CONFIG MAP"
+    elif auth_mode == 'API':
         return "API Only"
     elif auth_mode == 'CONFIG_MAP':
         return "Config Map Only"
