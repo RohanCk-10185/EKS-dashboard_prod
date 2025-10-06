@@ -138,6 +138,7 @@ async def read_dashboard(request: Request, db: Session = Depends(database.get_db
         "clusters_with_upgrade_insights_attention": sum(1 for c in all_clusters if c["upgrade_insight_status"] == "NEEDS_ATTENTION"),
         "clusters_nearing_eol_90_days": sum(1 for c in all_clusters if c["version"] and (eol := EKS_EOL_DATES.get(c["version"])) and now < eol <= ninety_days_from_now),
         "accounts_running_kubernetes_clusters": len({c["account_id"] for c in all_clusters}),
+        "clusters_with_full_access": sum(1 for c in all_clusters if c.get("access_config_summary") == "Full Access"),
     }
     context = {"request": request, "clusters": all_clusters, "quick_info": quick_info, "errors": []}
     return templates.TemplateResponse("dashboard.html", context)

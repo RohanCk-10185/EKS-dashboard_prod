@@ -563,6 +563,7 @@ def _process_cluster_data(c_raw, with_details=False, detail_results=None):
         "upgrade_insight_status": "PASSING" if version == "Unknown" or version >= "1.29" else "NEEDS_ATTENTION",
         "is_nearing_eol_90_days": bool(eol_date and now < eol_date <= ninety_days_from_now),
         "eks_auto_mode": eks_auto_mode_value,
+        "access_config": c_raw.get("accessConfig", {}),
     }
 
     if with_details and detail_results:

@@ -31,6 +31,7 @@
          <div class="info-box"><div class="icon-bg"><i data-feather="tool"></i></div><div><div class="value count-up" data-target="{{ quick_info.clusters_with_upgrade_insights_attention | default(0) }}">0</div><div class="label">Upgrade Attention</div></div></div>
          <div class="info-box"><div class="icon-bg"><i data-feather="calendar"></i></div><div><div class="value count-up" data-target="{{ quick_info.clusters_nearing_eol_90_days | default(0) }}">0</div><div class="label">Nearing EOL (90d)</div></div></div>
          <div class="info-box"><div class="icon-bg"><i data-feather="briefcase"></i></div><div><div class="value count-up" data-target="{{ quick_info.accounts_running_kubernetes_clusters | default(0) }}">0</div><div class="label">Active Accounts</div></div></div>
+         <div class="info-box"><div class="icon-bg"><i data-feather="shield"></i></div><div><div class="value" id="access-config-summary">Loading...</div><div class="label">Access Config</div></div></div>
     </div>
 
     <div class="widget-grid-dynamic">
@@ -48,6 +49,7 @@
         </div>
         <div class="widget"><div class="widget-header"><h2><i data-feather="git-commit"></i>Clusters by Kubernetes Version</h2></div><div class="widget-content"><div class="chart-container"><canvas id="versionChart"></canvas></div></div></div>
         <div class="widget"><div class="widget-header"><h2><i data-feather="heart"></i>Cluster Health Status</h2></div><div class="widget-content"><div class="chart-container"><canvas id="healthStatusChart"></canvas></div></div></div>
+        <div class="widget"><div class="widget-header"><h2><i data-feather="shield"></i>Access Configuration</h2></div><div class="widget-content"><div class="chart-container"><canvas id="accessConfigChart"></canvas></div></div></div>
     </div>
 {% endblock %}
 
@@ -81,10 +83,12 @@
             const regionCounts = data.reduce((acc, c) => { acc[c.region] = (acc[c.region] || 0) + 1; return acc; }, {});
             const versionCounts = data.reduce((acc, c) => { acc[c.version] = (acc[c.version] || 0) + 1; return acc; }, {});
             const healthCounts = data.reduce((acc, c) => { acc[c.health_status_summary] = (acc[c.health_status_summary] || 0) + 1; return acc; }, {});
+            const accessConfigCounts = data.reduce((acc, c) => { acc[c.access_config_summary] = (acc[c.access_config_summary] || 0) + 1; return acc; }, {});
             renderChart('accountChart', 'bar', accountCounts);
             renderChart('regionChart', 'bar', regionCounts);
             renderChart('versionChart', 'bar', versionCounts);
             renderChart('healthStatusChart', 'doughnut', healthCounts);
+            renderChart('accessConfigChart', 'doughnut', accessConfigCounts);
         }
 
         function animateCounters() {
@@ -107,9 +111,26 @@
             });
         }
 
+        function updateAccessConfigSummary(data) {
+            const accessConfigCounts = data.reduce((acc, c) => { 
+                acc[c.access_config_summary] = (acc[c.access_config_summary] || 0) + 1; 
+                return acc; 
+            }, {});
+            
+            // Find the most common access configuration
+            const mostCommon = Object.entries(accessConfigCounts)
+                .sort(([,a], [,b]) => b - a)[0];
+            
+            const summaryElement = document.getElementById('access-config-summary');
+            if (summaryElement && mostCommon) {
+                summaryElement.textContent = `${mostCommon[0]} (${mostCommon[1]})`;
+            }
+        }
+
         document.addEventListener('DOMContentLoaded', () => {
             updateAllCharts(allClusters);
             animateCounters();
+            updateAccessConfigSummary(allClusters);
         });
     </script>
 {% endblock %}

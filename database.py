@@ -35,6 +35,7 @@ class Cluster(Base):
     oidc_provider_url = Column(String)
     security_insights = Column(JSON)
     workloads = Column(JSON)
+    access_config = Column(JSON)
     last_updated = Column(DateTime, default=datetime.utcnow)
     nodegroups = relationship("Nodegroup", back_populates="cluster", cascade="all, delete-orphan")
     addons = relationship("Addon", back_populates="cluster", cascade="all, delete-orphan")
@@ -201,6 +202,7 @@ def update_cluster_data(session: Session, cluster_data: dict):
     cluster.oidc_provider_url = cluster_data.get('oidc_provider_url')
     cluster.security_insights = cluster_data.get('security_insights')
     cluster.workloads = cluster_data.get('workloads')
+    cluster.access_config = cluster_data.get('access_config')
 
     if cluster_data.get('certificateAuthority'):
         cluster.certificate_authority_data = cluster_data['certificateAuthority'].get('data')
@@ -288,7 +290,25 @@ def get_all_clusters_summary(session: Session):
         "createdAt": c.created_at.isoformat() if c.created_at else None,
         "health_status_summary": "HEALTHY" if not c.health_issues else "HAS_ISSUES",
         "upgrade_insight_status": "PASSING" if c.version and c.version >= "1.29" else "NEEDS_ATTENTION",
+        "access_config_summary": _get_access_config_summary(c.access_config),
     } for c in clusters]
+
+def _get_access_config_summary(access_config):
+    """Generate a summary of access configuration for display"""
+    if not access_config:
+        return "Unknown"
+    
+    bootstrap_admin = access_config.get('bootstrapClusterCreatorAdminPermissions', False)
+    auth_mode = access_config.get('authenticationMode', 'Unknown')
+    
+    if bootstrap_admin and auth_mode == 'API_AND_CONFIG_MAP':
+        return "Full Access"
+    elif bootstrap_admin and auth_mode == 'API':
+        return "API Only"
+    elif auth_mode == 'CONFIG_MAP':
+        return "Config Map Only"
+    else:
+        return f"Custom ({auth_mode})"
 
 def get_cluster_details(session: Session, account_id: str, region: str, cluster_name: str):
     cluster = session.query(Cluster).options(
