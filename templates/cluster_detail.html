@@ -80,6 +80,7 @@
             <button class="tab-link" onclick="openTab(event, 'addons')"><i data-feather="box"></i>Add-ons</button>
             <button class="tab-link" onclick="openTab(event, 'resources')"><i data-feather="grid"></i>Resources</button>
             <button class="tab-link" onclick="openTab(event, 'observability')"><i data-feather="bar-chart-2"></i>Observability</button>
+            <button class="tab-link" onclick="openTab(event, 'control-plane')"><i data-feather="monitor"></i>Control Plane</button>
             <button class="tab-link" onclick="openTab(event, 'insights')"><i data-feather="zap"></i>Analysis & Insights</button>
         </div>
 
@@ -88,6 +89,7 @@
         {% include '_cluster_addons.html' %}
         {% include '_cluster_resources.html' %}
         {% include '_cluster_observability.html' %}
+        {% include '_cluster_control_plane.html' %}
         {% include '_cluster_insights.html' %}
     </div>
 
@@ -115,13 +117,15 @@
     
     // FIX: Use the 'default' filter to provide a fallback value *before* tojson is called.
     // This makes the template more resilient and prevents the "Undefined" error.
-    const initialWorkloadsError = {{ cluster.workloads_error | default(none) | tojson | safe }};
+    const initialWorkloadsError = {% if cluster.workloads_error %}{{ cluster.workloads_error | tojson | safe }}{% else %}null{% endif %};
 
     let resourcesTabInitialized = false;
     let resourcesDataLoading = false; // Flag to prevent multiple concurrent fetches
     let activeTab = 'overview';
     let metricCharts = {};
     let metricsLoaded = false;
+    let controlPlaneMetricsLoaded = false;
+    let controlPlaneCharts = {};
     let activeResourceType = 'pod';
     
     let resourcePagination = {
@@ -142,6 +146,8 @@
             loadAndInitializeResourcesTab();
         } else if (tabName === 'observability' && !metricsLoaded) {
             loadMetrics();
+        } else if (tabName === 'control-plane' && !controlPlaneMetricsLoaded) {
+            loadControlPlaneMetrics();
         }
         feather.replace();
     }
@@ -863,6 +869,144 @@
         } finally {
             loadingState.style.display = 'none';
         }
+    }
+
+    async function loadControlPlaneMetrics() {
+        if (controlPlaneMetricsLoaded) return;
+        const loadingState = document.getElementById('control-plane-loading-state');
+        const grid = document.querySelector('#control-plane .metrics-container');
+        const errorState = document.getElementById('control-plane-error-state');
+        loadingState.style.display = 'block';
+        grid.style.display = 'none';
+        errorState.style.display = 'none';
+        try {
+            const url = `/api/control-plane-metrics/${CLUSTER_INFO.accountId}/${CLUSTER_INFO.region}/${CLUSTER_INFO.name}`;
+            const response = await fetch(url);
+            const metricsData = await response.json();
+            if (!response.ok) throw new Error(metricsData.error || 'Failed to fetch control plane metrics');
+            processAndRenderControlPlaneCharts(metricsData);
+            controlPlaneMetricsLoaded = true;
+            grid.style.display = 'block';
+        } catch (error) {
+            console.error("Failed to load control plane metrics:", error);
+            errorState.querySelector('p').textContent = `Error: ${error.message}`;
+            errorState.style.display = 'block';
+        } finally {
+            loadingState.style.display = 'none';
+        }
+    }
+
+    function processAndRenderControlPlaneCharts(metrics) {
+        const hasData = (key) => metrics && metrics[key] && metrics[key].values && metrics[key].values.length > 0;
+        const colors = { 
+            blue: '#0d6efd', 
+            green: '#198754', 
+            orange: '#fd7e14', 
+            red: '#dc3545', 
+            gray: '#6c757d',
+            lightGray: '#adb5bd',
+            purple: '#6f42c1'
+        };
+        
+        // Row 1: Requests
+        renderOrShowNoData('requests-chart', () => {
+            const ds = hasData('apiserver_request_total') ? [ {...metrics.apiserver_request_total, label: 'apiserver_request_total', color: colors.blue} ] : [];
+            if (ds.length > 0) return renderChart('requests-chart', ds, false, 'Count');
+            return false;
+        });
+
+        renderOrShowNoData('requests-4xx-chart', () => {
+            const ds = hasData('apiserver_request_total_4XX') ? [ {...metrics.apiserver_request_total_4XX, label: 'apiserver_request_total_4XX', color: colors.blue} ] : [];
+            if (ds.length > 0) return renderChart('requests-4xx-chart', ds, false, 'Count');
+            return false;
+        });
+
+        renderOrShowNoData('requests-5xx-chart', () => {
+            const ds = hasData('apiserver_request_total_5XX') ? [ {...metrics.apiserver_request_total_5XX, label: 'apiserver_request_total_5XX', color: colors.blue} ] : [];
+            if (ds.length > 0) return renderChart('requests-5xx-chart', ds, false, 'Count');
+            return false;
+        });
+
+        // Row 2: HTTP 429, Storage, Scheduler
+        renderOrShowNoData('requests-429-chart', () => {
+            const ds = hasData('apiserver_request_total_429') ? [ {...metrics.apiserver_request_total_429, label: 'apiserver_request_total_429', color: colors.blue} ] : [];
+            if (ds.length > 0) return renderChart('requests-429-chart', ds, false, 'Count');
+            return false;
+        });
+
+        renderOrShowNoData('storage-size-chart', () => {
+            const ds = hasData('apiserver_storage_size_bytes') ? [ {...metrics.apiserver_storage_size_bytes, label: 'apiserver_storage_size_bytes', color: colors.blue} ] : [];
+            if (ds.length > 0) return renderChart('storage-size-chart', ds, false, 'Bytes');
+            return false;
+        });
+
+        renderOrShowNoData('scheduler-attempts-chart', () => {
+            const ds = [];
+            if (hasData('scheduler_schedule_attempts_SCHEDULED')) ds.push({...metrics.scheduler_schedule_attempts_SCHEDULED, label: 'scheduler_schedule_attempts_SCHEDULED', color: colors.lightGray});
+            if (hasData('scheduler_schedule_attempts_UNSCHEDULABLE')) ds.push({...metrics.scheduler_schedule_attempts_UNSCHEDULABLE, label: 'scheduler_schedule_attempts_UNSCHEDULABLE', color: colors.gray});
+            if (hasData('scheduler_schedule_attempts_ERROR')) ds.push({...metrics.scheduler_schedule_attempts_ERROR, label: 'scheduler_schedule_attempts_ERROR', color: colors.green});
+            if (ds.length > 0) return renderChart('scheduler-attempts-chart', ds, true, 'Count');
+            return false;
+        });
+
+        // Row 3: Pending Pods, API Latency, Inflight Requests
+        renderOrShowNoData('pending-pods-chart', () => {
+            const ds = [];
+            if (hasData('scheduler_pending_pods_GATED')) ds.push({...metrics.scheduler_pending_pods_GATED, label: 'scheduler_pending_pods_GATED', color: colors.orange});
+            if (hasData('scheduler_pending_pods_UNSCHEDULABLE')) ds.push({...metrics.scheduler_pending_pods_UNSCHEDULABLE, label: 'scheduler_pending_pods_UNSCHEDULABLE', color: colors.blue});
+            if (hasData('scheduler_pending_pods_ACTIVEQ')) ds.push({...metrics.scheduler_pending_pods_ACTIVEQ, label: 'scheduler_pending_pods_ACTIVEQ', color: colors.green});
+            if (hasData('scheduler_pending_pods_BACKOFF')) ds.push({...metrics.scheduler_pending_pods_BACKOFF, label: 'scheduler_pending_pods_BACKOFF', color: colors.red});
+            if (ds.length > 0) return renderChart('pending-pods-chart', ds, true, 'Count');
+            return false;
+        });
+
+        renderOrShowNoData('api-server-latency-chart', () => {
+            const ds = [];
+            if (hasData('apiserver_request_duration_seconds_GET_P99')) ds.push({...metrics.apiserver_request_duration_seconds_GET_P99, label: 'apiserver_request_duration_seconds_GET_P99', color: colors.blue});
+            if (hasData('apiserver_request_duration_seconds_POST_P99')) ds.push({...metrics.apiserver_request_duration_seconds_POST_P99, label: 'apiserver_request_duration_seconds_POST_P99', color: colors.orange});
+            if (hasData('apiserver_request_duration_seconds_PUT_P99')) ds.push({...metrics.apiserver_request_duration_seconds_PUT_P99, label: 'apiserver_request_duration_seconds_PUT_P99', color: colors.green});
+            if (hasData('apiserver_request_duration_seconds_DELETE_P99')) ds.push({...metrics.apiserver_request_duration_seconds_DELETE_P99, label: 'apiserver_request_duration_seconds_DELETE_P99', color: colors.red});
+            if (hasData('apiserver_request_duration_seconds_LIST_P99')) ds.push({...metrics.apiserver_request_duration_seconds_LIST_P99, label: 'apiserver_request_duration_seconds_LIST_P99', color: colors.purple});
+            if (hasData('apiserver_request_duration_seconds_PATCH_P99')) ds.push({...metrics.apiserver_request_duration_seconds_PATCH_P99, label: 'apiserver_request_duration_seconds_PATCH_P99', color: colors.gray});
+            if (ds.length > 0) return renderChart('api-server-latency-chart', ds, false, 'Seconds');
+            return false;
+        });
+
+        renderOrShowNoData('api-server-inflight-chart', () => {
+            const ds = [];
+            if (hasData('scheduler_schedule_attempts_ERROR')) ds.push({...metrics.scheduler_schedule_attempts_ERROR, label: 'scheduler_schedule_attempts_ERROR', color: colors.gray});
+            if (hasData('apiserver_current_inflight_requests_READONLY')) ds.push({...metrics.apiserver_current_inflight_requests_READONLY, label: 'apiserver_current_inflight_requests_READONLY', color: colors.orange});
+            if (ds.length > 0) return renderChart('api-server-inflight-chart', ds, false, 'Count');
+            return false;
+        });
+
+        // Row 4: Webhook Metrics
+        renderOrShowNoData('webhook-requests-chart', () => {
+            const ds = [];
+            if (hasData('apiserver_admission_webhook_request_total_AWS_PI_WEBHOOK_ADMIT_2XX')) ds.push({...metrics.apiserver_admission_webhook_request_total_AWS_PI_WEBHOOK_ADMIT_2XX, label: 'apiserver_admission_webhook_request_total_AWS_PI_WEBHOOK_ADMIT_2XX', color: colors.blue});
+            if (hasData('apiserver_admission_webhook_request_total_AWS_PI_WEBHOOK_ADMIT_4XX')) ds.push({...metrics.apiserver_admission_webhook_request_total_AWS_PI_WEBHOOK_ADMIT_4XX, label: 'apiserver_admission_webhook_request_total_AWS_PI_WEBHOOK_ADMIT_4XX', color: colors.orange});
+            if (hasData('apiserver_admission_webhook_request_total_AWS_PI_WEBHOOK_ADMIT_5XX')) ds.push({...metrics.apiserver_admission_webhook_request_total_AWS_PI_WEBHOOK_ADMIT_5XX, label: 'apiserver_admission_webhook_request_total_AWS_PI_WEBHOOK_ADMIT_5XX', color: colors.green});
+            if (ds.length > 0) return renderChart('webhook-requests-chart', ds, true, 'Count');
+            return false;
+        });
+
+        renderOrShowNoData('webhook-rejections-chart', () => {
+            const ds = [];
+            if (hasData('apiserver_admission_webhook_rejection_count_AWS_PI_WEBHOOK_ADMIT_API_SERVER_INTERNAL_ERROR')) ds.push({...metrics.apiserver_admission_webhook_rejection_count_AWS_PI_WEBHOOK_ADMIT_API_SERVER_INTERNAL_ERROR, label: 'apiserver_admission_webhook_rejection_count_AWS_PI_WEBHOOK_ADMIT_API_SERVER_INTERNAL_ERROR', color: colors.blue});
+            if (hasData('apiserver_admission_webhook_rejection_count_AWS_AUTH_WEBHOOK_VALIDATE_UPDATE_API_SERVER_INTERNAL_ERROR')) ds.push({...metrics.apiserver_admission_webhook_rejection_count_AWS_AUTH_WEBHOOK_VALIDATE_UPDATE_API_SERVER_INTERNAL_ERROR, label: 'apiserver_admission_webhook_rejection_count_AWS_AUTH_WEBHOOK_VALIDATE_UPDATE_API_SERVER_INTERNAL_ERROR', color: colors.orange});
+            if (hasData('apiserver_admission_webhook_rejection_count_AWS_AUTH_WEBHOOK_VALIDATE_UPDATE_CALLING_WEBHOOK_ERROR')) ds.push({...metrics.apiserver_admission_webhook_rejection_count_AWS_AUTH_WEBHOOK_VALIDATE_UPDATE_CALLING_WEBHOOK_ERROR, label: 'apiserver_admission_webhook_rejection_count_AWS_AUTH_WEBHOOK_VALIDATE_UPDATE_CALLING_WEBHOOK_ERROR', color: colors.green});
+            if (hasData('apiserver_admission_webhook_rejection_count_AWS_PI_WEBHOOK_ADMIT_CALLING_WEBHOOK_ERROR')) ds.push({...metrics.apiserver_admission_webhook_rejection_count_AWS_PI_WEBHOOK_ADMIT_CALLING_WEBHOOK_ERROR, label: 'apiserver_admission_webhook_rejection_count_AWS_PI_WEBHOOK_ADMIT_CALLING_WEBHOOK_ERROR', color: colors.red});
+            if (ds.length > 0) return renderChart('webhook-rejections-chart', ds, true, 'Count');
+            return false;
+        });
+
+        renderOrShowNoData('webhook-latency-chart', () => {
+            const ds = [];
+            if (hasData('apiserver_admission_webhook_admission_duration_seconds_AWS_PI_WEBHOOK_ADMIT_CREATE_P99')) ds.push({...metrics.apiserver_admission_webhook_admission_duration_seconds_AWS_PI_WEBHOOK_ADMIT_CREATE_P99, label: 'apiserver_admission_webhook_admission_duration_seconds_AWS_PI_WEBHOOK_ADMIT_CREATE_P99', color: colors.blue});
+            if (hasData('apiserver_admission_webhook_admission_duration_seconds_AWS_AUTH_WEBHOOK_VALIDATE_UPDATE_P99')) ds.push({...metrics.apiserver_admission_webhook_admission_duration_seconds_AWS_AUTH_WEBHOOK_VALIDATE_UPDATE_P99, label: 'apiserver_admission_webhook_admission_duration_seconds_AWS_AUTH_WEBHOOK_VALIDATE_UPDATE_P99', color: colors.orange});
+            if (ds.length > 0) return renderChart('webhook-latency-chart', ds, false, 'Seconds');
+            return false;
+        });
     }
     
     // --- DOMContentLoaded Event Listener ---

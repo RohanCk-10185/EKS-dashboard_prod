@@ -367,6 +367,81 @@ def upgrade_nodegroup_version(account_id, region, cluster_name, nodegroup_name, 
     except ClientError as e:
         return {"error": e.response['Error']['Message']}
 
+# --- Control Plane Metrics Fetcher ---
+def get_control_plane_metrics(account_id, region, cluster_name, role_arn=None):
+    """Fetches control plane specific metrics for EKS clusters."""
+    session = get_session(role_arn)
+    if not session:
+        return {"error": f"Failed to get session for account {account_id}."}
+
+    cw_client = session.client('cloudwatch', region_name=region)
+    control_plane_metric_definitions = {
+        # Row 1: Requests
+        "apiserver_request_total": ('apiserver_request_total', 'Sum'),
+        "apiserver_request_total_4XX": ('apiserver_request_total_4XX', 'Sum'),
+        "apiserver_request_total_5XX": ('apiserver_request_total_5XX', 'Sum'),
+        
+        # Row 2: HTTP 429, Storage, Scheduler
+        "apiserver_request_total_429": ('apiserver_request_total_429', 'Sum'),
+        "apiserver_storage_size_bytes": ('apiserver_storage_size_bytes', 'Average'),
+        "scheduler_schedule_attempts_SCHEDULED": ('scheduler_schedule_attempts_SCHEDULED', 'Sum'),
+        "scheduler_schedule_attempts_UNSCHEDULABLE": ('scheduler_schedule_attempts_UNSCHEDULABLE', 'Sum'),
+        "scheduler_schedule_attempts_ERROR": ('scheduler_schedule_attempts_ERROR', 'Sum'),
+        
+        # Row 3: Pending Pods
+        "scheduler_pending_pods_GATED": ('scheduler_pending_pods_GATED', 'Sum'),
+        "scheduler_pending_pods_UNSCHEDULABLE": ('scheduler_pending_pods_UNSCHEDULABLE', 'Sum'),
+        "scheduler_pending_pods_ACTIVEQ": ('scheduler_pending_pods_ACTIVEQ', 'Sum'),
+        "scheduler_pending_pods_BACKOFF": ('scheduler_pending_pods_BACKOFF', 'Sum'),
+        
+        # Row 3: API Server Request Latency
+        "apiserver_request_duration_seconds_GET_P99": ('apiserver_request_duration_seconds_GET', 'p99'),
+        "apiserver_request_duration_seconds_POST_P99": ('apiserver_request_duration_seconds_POST', 'p99'),
+        "apiserver_request_duration_seconds_PUT_P99": ('apiserver_request_duration_seconds_PUT', 'p99'),
+        "apiserver_request_duration_seconds_DELETE_P99": ('apiserver_request_duration_seconds_DELETE', 'p99'),
+        "apiserver_request_duration_seconds_LIST_P99": ('apiserver_request_duration_seconds_LIST', 'p99'),
+        "apiserver_request_duration_seconds_PATCH_P99": ('apiserver_request_duration_seconds_PATCH', 'p99'),
+        
+        # Row 3: API Server Current Inflight Requests
+        "apiserver_current_inflight_requests_READONLY": ('apiserver_current_inflight_requests_READONLY', 'Average'),
+        
+        # Row 4: Webhook Requests
+        "apiserver_admission_webhook_request_total_AWS_PI_WEBHOOK_ADMIT_2XX": ('apiserver_admission_webhook_request_total_AWS_PI_WEBHOOK_ADMIT_2XX', 'Sum'),
+        "apiserver_admission_webhook_request_total_AWS_PI_WEBHOOK_ADMIT_4XX": ('apiserver_admission_webhook_request_total_AWS_PI_WEBHOOK_ADMIT_4XX', 'Sum'),
+        "apiserver_admission_webhook_request_total_AWS_PI_WEBHOOK_ADMIT_5XX": ('apiserver_admission_webhook_request_total_AWS_PI_WEBHOOK_ADMIT_5XX', 'Sum'),
+        
+        # Row 4: Webhook Request Rejections
+        "apiserver_admission_webhook_rejection_count_AWS_PI_WEBHOOK_ADMIT_API_SERVER_INTERNAL_ERROR": ('apiserver_admission_webhook_rejection_count_AWS_PI_WEBHOOK_ADMIT_API_SERVER_INTERNAL_ERROR', 'Sum'),
+        "apiserver_admission_webhook_rejection_count_AWS_AUTH_WEBHOOK_VALIDATE_UPDATE_API_SERVER_INTERNAL_ERROR": ('apiserver_admission_webhook_rejection_count_AWS_AUTH_WEBHOOK_VALIDATE_UPDATE_API_SERVER_INTERNAL_ERROR', 'Sum'),
+        "apiserver_admission_webhook_rejection_count_AWS_AUTH_WEBHOOK_VALIDATE_UPDATE_CALLING_WEBHOOK_ERROR": ('apiserver_admission_webhook_rejection_count_AWS_AUTH_WEBHOOK_VALIDATE_UPDATE_CALLING_WEBHOOK_ERROR', 'Sum'),
+        "apiserver_admission_webhook_rejection_count_AWS_PI_WEBHOOK_ADMIT_CALLING_WEBHOOK_ERROR": ('apiserver_admission_webhook_rejection_count_AWS_PI_WEBHOOK_ADMIT_CALLING_WEBHOOK_ERROR', 'Sum'),
+        
+        # Row 4: Webhook Request Latency P99
+        "apiserver_admission_webhook_admission_duration_seconds_AWS_PI_WEBHOOK_ADMIT_CREATE_P99": ('apiserver_admission_webhook_admission_duration_seconds_AWS_PI_WEBHOOK_ADMIT_CREATE_P99', 'p99'),
+        "apiserver_admission_webhook_admission_duration_seconds_AWS_AUTH_WEBHOOK_VALIDATE_UPDATE_P99": ('apiserver_admission_webhook_admission_duration_seconds_AWS_AUTH_WEBHOOK_VALIDATE_UPDATE_P99', 'p99'),
+    }
+
+    queries = [{
+        'Id': f'cp{i}', 'Label': key,
+        'MetricStat': { 'Metric': {'Namespace': 'ContainerInsights', 'MetricName': name, 'Dimensions': [{'Name': 'ClusterName', 'Value': cluster_name}]}, 'Period': 60, 'Stat': stat},
+        'ReturnData': True
+    } for i, (key, (name, stat)) in enumerate(control_plane_metric_definitions.items())]
+
+    try:
+        response = cw_client.get_metric_data(
+            MetricDataQueries=queries,
+            StartTime=datetime.now(timezone.utc) - timedelta(hours=6), 
+            EndTime=datetime.now(timezone.utc),
+            ScanBy='TimestampDescending'
+        )
+        return {res['Label']: {'timestamps': [ts.isoformat() for ts in res['Timestamps']], 'values': res['Values']} for res in response['MetricDataResults']}
+    except ClientError as e:
+        logging.error(f"Could not fetch control plane metrics for {cluster_name}. Ensure Container Insights is enabled. Error: {e}")
+        return {'error': f"Could not fetch control plane metrics. Ensure Container Insights is enabled. Error: {e.response['Error']['Message']}"}
+    except Exception as e:
+        logging.error(f"An unexpected error occurred fetching control plane metrics for {cluster_name}: {e}")
+        return {'error': f'An unexpected error occurred fetching control plane metrics: {str(e)}'}
+
 # --- Metrics Fetcher ---
 def get_cluster_metrics(account_id, region, cluster_name, role_arn=None):
     session = get_session(role_arn)
@@ -418,15 +493,12 @@ def get_cluster_metrics(account_id, region, cluster_name, role_arn=None):
         "pod_status_failed": ('pod_status_failed', 'Average'),
         "pod_status_unknown": ('pod_status_unknown', 'Average'),
 
-        # Control Plane
         "apiserver_request_total": ('apiserver_request_total', 'Sum'),
         "apiserver_request_duration_seconds": ('apiserver_request_duration_seconds', 'Average'),
         "rest_client_requests_total": ('rest_client_requests_total', 'Sum'),
         "rest_client_request_duration_seconds": ('rest_client_request_duration_seconds', 'Average'),
         "apiserver_admission_controller_admission_duration_seconds": ('apiserver_admission_controller_admission_duration_seconds', 'Average'),
         "etcd_request_duration_seconds": ('etcd_request_duration_seconds', 'Average'),
-        "apiserver_storage_objects": ('apiserver_storage_objects', 'Average'),
-        "apiserver_storage_size_bytes": ('apiserver_storage_size_bytes', 'Average'),
     }
 
     queries = [{

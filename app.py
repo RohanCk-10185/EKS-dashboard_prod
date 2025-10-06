@@ -37,6 +37,7 @@ from data_updater import update_all_data, update_single_cluster_data
 from aws_data_fetcher import (
     upgrade_nodegroup_version,
     get_cluster_metrics,
+    get_control_plane_metrics,
     get_k8s_api_client,
     get_role_arn_for_account,
     EKS_EOL_DATES,
@@ -189,6 +190,12 @@ async def upgrade_nodegroup_api(request: Request):
 async def get_metrics_api(account_id: str, region: str, cluster_name: str):
     role_arn = get_role_arn_for_account(account_id)
     metrics = get_cluster_metrics(account_id, region, cluster_name, role_arn)
+    return JSONResponse(content=metrics, status_code=500 if "error" in metrics else 200)
+
+@app.get("/api/control-plane-metrics/{account_id}/{region}/{cluster_name}")
+async def get_control_plane_metrics_api(account_id: str, region: str, cluster_name: str):
+    role_arn = get_role_arn_for_account(account_id)
+    metrics = get_control_plane_metrics(account_id, region, cluster_name, role_arn)
     return JSONResponse(content=metrics, status_code=500 if "error" in metrics else 200)
 
 @app.get("/api/workloads/{account_id}/{region}/{cluster_name}", response_class=JSONResponse)
